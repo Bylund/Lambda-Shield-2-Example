@@ -2,7 +2,7 @@
     Example code compatible with the Lambda Shield for Arduino.
     
     Copyright (C) 2017 - 2020 Bylund Automotive AB.
-    
+
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -23,11 +23,13 @@
 
     Version history:
     2020-03-29        v1.0.0        First release to GitHub.
+    2020-06-18        v1.1.0        Implemented support for data logging.
 
 */
 
 //Define included headers.
 #include <SPI.h>
+#include <SD.h>
 
 //Define CJ125 registers used.
 #define           CJ125_IDENT_REG_REQUEST             0x4800        /* Identify request, gives revision of the chip. */
@@ -66,6 +68,8 @@ int adcValue_UR_Optimal = 0;                                        /* UR ADC va
 int HeaterOutput = 0;                                               /* Current PWM output value (0-255) of the heater output pin */
 int serial_counter = 0;                                             /* Counter used to calculate refresh rate on the serial output */
 int CJ125_Status = 0;                                               /* Latest stored DIAG registry response from the CJ125 */
+bool logEnabled = false;                                            /* Variable used for setting data logging enable or disabled. */
+
 
 //PID regulation variables.
 int dState;                                                         /* Last position input. */
@@ -153,18 +157,19 @@ const PROGMEM float Oxygen_Conversion[548] {
 //Function for transfering SPI data to the CJ125.
 uint16_t COM_SPI(uint16_t TX_data) {
 
-  //Set chip select pin low, chip in use.
+  //Configure SPI for CJ125 controller.
+  SPI.setDataMode(SPI_MODE1);
+  SPI.setClockDivider(SPI_CLOCK_DIV128);
+  
+  //Set chip select pin low, chip in use. 
   digitalWrite(CJ125_NSS_PIN, LOW);
 
-  //Transmit and receive.
-  byte highByte = SPI.transfer(TX_data >> 8);
-  byte lowByte = SPI.transfer(TX_data & 0xff);
+  //Transmit request.
+  uint16_t Response =  SPI.transfer16(TX_data);
 
   //Set chip select pin high, chip not in use.
   digitalWrite(CJ125_NSS_PIN, HIGH);
 
-  //Assemble response in to a 16bit integer and return the value.
-  uint16_t Response = (highByte << 8) + lowByte;
   return Response;
   
 }
@@ -273,6 +278,33 @@ float Lookup_Oxygen(int Input_ADC) {
     
 }
 
+//Data logging function.
+void logData(String logString) {
+
+  //Connect to SD-Card.
+  if ( SD.begin() ) {
+
+    //Open file.
+    File logFile = SD.open("log.txt", FILE_WRITE);
+
+    //Store data.
+    logFile.println(logString);
+
+    //Close file.
+    logFile.close();
+
+    //Flush SPI, required when switching between modes.
+    COM_SPI(0x00);
+    
+  } else {
+    
+    //Error handling.
+    Serial.println("Error accessing SD-card.");  
+    
+  }
+  
+}
+
 //Function to set up device for operation.
 void setup() {
   
@@ -281,10 +313,8 @@ void setup() {
 
   //Set up SPI.
   SPI.begin();  /* Note, SPI will disable the bult in LED. */
-  SPI.setClockDivider(SPI_CLOCK_DIV128);
   SPI.setBitOrder(MSBFIRST);
-  SPI.setDataMode(SPI_MODE1);
-  
+
   //Set up digital output pins.
   pinMode(CJ125_NSS_PIN, OUTPUT);  
   pinMode(LED_STATUS_POWER, OUTPUT);
@@ -306,6 +336,18 @@ void setup() {
   digitalWrite(LED_STATUS_POWER, LOW);
   digitalWrite(LED_STATUS_HEATER, LOW);
 
+  //Configure data logging.
+  if ( SD.begin() ) {
+    
+    //Enable data logging.
+    Serial.println("Data logging enabled.");
+    logEnabled = true;
+
+    //Flush SPI, required when switching between modes.
+    COM_SPI(0x00);
+    
+  }
+  
   //Start main function.
   start();
 
@@ -313,20 +355,23 @@ void setup() {
 
 void start() {
   
-  //Wait until everything is ready. Read CJ125 multiple times with delay in between to let it initialize. Otherwise responds OK.
-  int n = 0;
-  while (adcValue_UB < UBAT_MIN || CJ125_Status != CJ125_DIAG_REG_STATUS_OK || n < 9) {
+  //Wait until everything is ready.
+  while (adcValue_UB < UBAT_MIN || CJ125_Status != CJ125_DIAG_REG_STATUS_OK) {
     
     //Read CJ125 diagnostic register from SPI.
     CJ125_Status = COM_SPI(CJ125_DIAG_REG_REQUEST);
 
+    //Error handling.
+    if (CJ125_Status != CJ125_DIAG_REG_STATUS_OK) {
+      Serial.print("Error, CJ125: 0x");
+      Serial.print(CJ125_Status, HEX);
+      Serial.print("\n\r");
+    }
+    
     //Read input voltage.
     adcValue_UB = analogRead(UB_ANALOG_INPUT_PIN);
 
-    //Delay and increment counter.
-    delay(100);
-    n++;
-    
+    delay(1000);
   }
 
   //Start of operation. (Start Power LED).
@@ -485,39 +530,42 @@ void loop() {
 
     //Update analog output.
     UpdateAnalogOutput();
-      
+
     //Display information if no errors is reported.
     if (CJ125_Status == CJ125_DIAG_REG_STATUS_OK) {
       
-      //Output values.
-      Serial.print("Measuring, CJ125: 0x");
-      Serial.print(CJ125_Status, HEX);
-      Serial.print(", UA_ADC: ");
-      Serial.print(adcValue_UA);
-      Serial.print(", UR_ADC: ");
-      Serial.print(adcValue_UR);
-      Serial.print(", UBat_ADC: ");
-      Serial.print(adcValue_UB);
-      
+      //Assembled data.
+      String txString = "Measuring, CJ125: 0x";
+      txString += String(CJ125_Status, HEX);
+      txString += ", UA_ADC: ";
+      txString += String(adcValue_UA, DEC);
+      txString += ", UR_ADC: ";
+      txString += String(adcValue_UR, DEC);
+      txString += ", UB_ADC: ";
+      txString += String(adcValue_UB, DEC);
+
       //Display lambda value unless out of range.
       if (adcValue_UA >= 39 && adcValue_UA <= 791) {
-          Serial.print(", Lambda: ");
-          Serial.print(LAMBDA_VALUE, 2);
+          txString += ", Lambda: ";
+          txString += String(LAMBDA_VALUE, 2);
       } else {
-          Serial.print(", Lambda: -");
+          txString += ", Lambda: -";
       }
 
       //Display oxygen unless out of range.
       if (adcValue_UA >= 307) {
-        Serial.print(", Oxygen: ");
-        Serial.print(OXYGEN_CONTENT, 2);
-        Serial.print("%");
+        txString += ", Oxygen: ";
+        txString += String(OXYGEN_CONTENT, 2);
+        txString += "%";
       } else {
-        Serial.print(", Oxygen: -");
+        txString += ", Oxygen: -";
       }
       
-      //EOL.
-      Serial.print("\n\r");
+      //Output string
+      Serial.println(txString);
+
+      //Log string.
+      if (logEnabled == true) logData(txString);
       
     } else {
       
