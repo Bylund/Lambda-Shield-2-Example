@@ -26,6 +26,7 @@
     2020-06-18        v1.1.0        Implemented support for data logging.
     2024-08-29        v1.2.0        Support for Arduino Uno R4, Arduino IDE 2 with general improvements.
     2024-09-17        v1.3.0        Added display support.
+    2024-09-17        v1.3.1        Solved an issue with default display device.
 */
 
 //Define included headers.
@@ -81,7 +82,9 @@ const float pGain = 5;                                              /* Proportio
 const float iGain = 0.1;                                            /* Integral gain. Default = 0.2*/
 
 //Define display.
-U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+U8G2_NULL u8g2(U8G2_R0);
+//U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+//U8G2_SSD1306_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
 //Company logo bitmap.
 PROGMEM const unsigned char Logo[] = {
@@ -366,7 +369,7 @@ void setup() {
   
   //Set up serial communication.
   Serial.begin(9600);
-
+  Serial.println("Test.");
   //Set up SPI.
   SPI.begin();  /* Note, SPI will disable the bult in LED. */
 
